@@ -1,39 +1,31 @@
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import arvix  # Importing your arxiv.py script
 import pandas as pd
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 import openai
 import requests
-from chatbot import run_chatbot_with_document
-openai.api_key = "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"
+from Chatbot import run_chatbot_with_document
+
 # Initialize the sentence transformer model
 model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
 
-# Function to generate summary with GPT-4
-def generate_summary(text, language):
-    try: 
-        response = openai.Completion.create(
-            engine="Genera",  # Assuming "text-davinci-003" as an example, replace with your actual GPT-4 model name
-            prompt=f"Please summarize the following text in {language} within 150 words:\n\n{text}",
-            max_tokens=150,
-            temperature=0.7,
-            top_p=1.0,
-            n=1,
-            stop=None
-        )
-        summary = response.choices[0].text.strip()
-        return summary
-        print(response.choices[0].text.strip())
-    except openai.error.InvalidRequestError as e:
-        print(f"Invalid request error: {e}")
-    except openai.error.AuthenticationError as e:
-        print(f"Authentication error: {e}")
-    except openai.error.APIConnectionError as e:
-        print(f"API connection error: {e}")
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
-        
-
+# Function to generate summary with GPT-3.5
+def generate_summary(text,language,tokenizer,model):
+    template = f"""
+###Role:
+Your task is to answer the Question by using the Reference and make sure to elaborate about it in Output using the Reference.
+Make sure it actually answers the Question and make sure to convey it in {language}.
+###Reference:
+{text}
+###Question:Can you make sure summarize this Reference for me to conduct a literature review in 150 words
+###Output:
+    """
+    inputs = tokenizer(f"{template}", return_tensors='pt').input_ids.to('cuda:0')
+    outputs = model.generate(input_ids=inputs, max_new_tokens=2048, do_sample=True, top_p=1.0, top_k = 100, temperature=0.65)
+    gen_text = tokenizer.batch_decode(outputs.detach().cpu().numpy(), skip_special_tokens=True)[0][len(template):]
+    return gen_text  
 def find_closest_papers(user_input, num_matches=1):
     # Generate embedding for user input
     user_embedding = model.encode(user_input)
@@ -50,21 +42,23 @@ def find_closest_papers(user_input, num_matches=1):
 
     return df.iloc[top_indices]
 
+
 def main():
     print("=======================================================================================================================")
     user_topic = input("Enter your topic: ")
     language = input("Enter your preferred language: ")
-
-    # Assuming there's a function to fetch and process papers based on the topic
-    # e.g., arxiv.main(user_topic) if you have a module named arxiv doing this
+    arvix.main(user_topic)  # Process and fetch papers based on the topic
 
     df = pd.read_csv("arxiv_papers_with_embeddings.csv")
-    closest_papers = find_closest_papers(user_topic, 10)
+    closest_papers = find_closest_papers(user_topic,10)  # Assuming this function is defined elsewhere to use 'df'
 
+    tokenizer = AutoTokenizer.from_pretrained("TomGrc/FusionNet_7Bx2_MoE_14B")
+    model = AutoModelForCausalLM.from_pretrained("TomGrc/FusionNet_7Bx2_MoE_14B",load_in_4bit=True,device_map='cuda:0')
     count = 0
     for index, paper in closest_papers.iterrows():
-        summary = generate_summary(paper['abstract'], language)
-        count += 1
+        # Assuming generate_summary is correctly defined to use 'tokenizer' and 'model'
+        summary = generate_summary(paper['abstract'], language, tokenizer, model)
+        count += 1 
         print(f"\nSummary for paper {count} with the title {paper['title']}:\n{summary}")
 
     choice = int(input("\nEnter the number of the paper you would like to download: ")) - 1
@@ -73,11 +67,11 @@ def main():
     download_link = f"https://arxiv.org/pdf/{selected_paper['id']}.pdf"
     response = requests.get(download_link)
     if response.status_code == 200:
-        filename = f"{selected_paper['title'].replace('/', '_')}.pdf"  # Sanitize filename
+        filename = "Downloaded.pdf"
         with open(filename, 'wb') as f:
             f.write(response.content)
         print(f"Downloaded '{selected_paper['title']}' to {filename}")
-        run_chatbot_with_document(filename)  # Assuming this function is defined to interact based on the document
+        run_chatbot_with_document(filename)  
     else:
         print("Failed to download the paper.")
 
